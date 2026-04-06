@@ -1,0 +1,187 @@
+name: Sync Upstream
+
+on:
+  repository_dispatch:
+    types: [upstream-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Upstream version (e.g. 1.2.0)'
+        required: true
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.generate.outputs.changed }}
+      breaking: ${{ steps.generate.outputs.breaking }}
+      branch: ${{ steps.branch.outputs.name }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            VERSION="${{ github.event.client_payload.version }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Sparse checkout upstream
+        uses: actions/checkout@v4
+        with:
+          repository: hyunhee-jo/markdown-extract
+          ref: "v${{ steps.version.outputs.value }}"
+          path: upstream
+          sparse-checkout: |
+            options.json
+            scripts/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Create sync branch
+        id: branch
+        run: |
+          BRANCH="sync/v${{ steps.version.outputs.value }}"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Run generate-langchain.mjs
+        id: generate
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          mkdir -p .sync-report
+          node upstream/scripts/generate-langchain.mjs \
+            --options upstream/options.json \
+            --target langchain_markdown_extract/document_loaders.py \
+            --readme README.md \
+            --version "$VERSION" \
+            --pr-body .sync-report/pr-body.md
+
+      - name: Update dependency version
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          sed -i "s/\"markdown-extract>=.*\"/\"markdown-extract>=${VERSION}\"/" pyproject.toml
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "sync: update parameters from upstream v${{ steps.version.outputs.value }}"
+          git push origin "$BRANCH"
+
+  test:
+    needs: generate
+    if: needs.generate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.13']
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.generate.outputs.branch }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Wait for PyPI availability
+        env:
+          VERSION: ${{ needs.generate.outputs.version }}
+        run: |
+          for i in $(seq 1 20); do
+            if pip install --dry-run "markdown-extract==${VERSION}" 2>/dev/null; then
+              echo "Version ${VERSION} available on PyPI"
+              break
+            fi
+            echo "Waiting for PyPI... (attempt $i/20)"
+            sleep 30
+          done
+
+      - name: Install and test
+        run: |
+          pip install -e . pytest pytest-socket
+          pytest tests/test_document_loaders.py -v --disable-socket --allow-unix-socket
+
+  create-pr:
+    needs: [generate, test]
+    if: always() && needs.generate.result == 'success' && needs.generate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.generate.outputs.branch }}
+
+      - name: Read PR body
+        id: pr-body
+        run: |
+          if [ -f .sync-report/pr-body.md ]; then
+            BODY=$(cat .sync-report/pr-body.md)
+          else
+            BODY="Sync upstream v${{ needs.generate.outputs.version }}"
+          fi
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$BODY" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BREAKING: ${{ needs.generate.outputs.breaking }}
+          TEST_RESULT: ${{ needs.test.result }}
+          VERSION: ${{ needs.generate.outputs.version }}
+          BRANCH: ${{ needs.generate.outputs.branch }}
+        run: |
+          DRAFT_FLAG=""
+          if [ "$TEST_RESULT" != "success" ]; then
+            DRAFT_FLAG="--draft"
+          fi
+
+          LABELS="sync,automated"
+          if [ "$BREAKING" = "true" ]; then
+            LABELS="$LABELS,breaking-change"
+          fi
+
+          gh pr create \
+            --title "sync: update parameters from upstream v${VERSION}" \
+            --body "${{ steps.pr-body.outputs.body }}" \
+            --base main \
+            --head "$BRANCH" \
+            --label "$LABELS" \
+            $DRAFT_FLAG || echo "PR already exists"
