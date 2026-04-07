@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-langchain-md-extract is a LangChain Document Loader that wraps md-extract.
+langchain-jostack-mdparse is a LangChain Document Loader that wraps jostack-mdparse.
 
 ## Architecture
 
-- `langchain_md_extract/document_loaders.py` — Core loader (BaseLoader subclass)
+- `langchain_jostack_mdparse/document_loaders.py` — Core loader (BaseLoader subclass)
 - 3 SYNCED marker blocks: PARAMS, ASSIGNMENTS, CONVERT KWARGS
-- Parameters are auto-generated from upstream md-extract's options.json
+- Parameters are auto-generated from upstream jostack-mdparse's options.json
 
 ## Key Design Decisions
 

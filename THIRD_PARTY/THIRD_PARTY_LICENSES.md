@@ -7,7 +7,7 @@ This project depends on the following third-party packages:
 - License: MIT
 - Repository: https://github.com/langchain-ai/langchain
 
-## md-extract
+## jostack-mdparse
 
 - License: MIT
-- Repository: https://github.com/hyunhee-jo/md-extract
+- Repository: https://github.com/hyunhee-jo/jostack-mdparse

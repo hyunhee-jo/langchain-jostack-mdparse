@@ -1,4 +1,4 @@
-"""Shared test fixtures for langchain-md-extract."""
+"""Shared test fixtures for langchain-jostack-mdparse."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ def sample_md(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def mock_extract():
-    """Mock md_extract.extract to avoid real dependency."""
-    with patch("langchain_md_extract.document_loaders._extract") as mock:
+    """Mock jostack_mdparse.extract to avoid real dependency."""
+    with patch("langchain_jostack_mdparse.document_loaders._extract") as mock:
         mock.return_value = (
             '{"source": "test.md", "sections": '
             '[{"level": 1, "title": "Intro", "content": "Hello"}]}'
